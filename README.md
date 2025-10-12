@@ -25,7 +25,8 @@
    ```bash
    pip install aiohttp
    ```
-3. 重启Maim Bot
+3. 在bot_config.toml中的plan_style加入:"reason中必须带有你回复的人的名称并用**()**包裹" 最好不要启用mentioned_bot_reply
+4. 重启MaiM
 
 ## 配置说明
 
