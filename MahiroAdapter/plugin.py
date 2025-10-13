@@ -5,8 +5,8 @@ from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from typing import TypedDict, override
 
-from ...src.common.logger import get_logger
-from ...src.plugin_system import (
+from src.common.logger import get_logger
+from src.plugin_system import (
     ActionInfo,
     BaseEventHandler,
     BasePlugin,
@@ -664,12 +664,12 @@ class UserInfoPlugin(BasePlugin):
         """测试补丁是否生效"""
         try:
             try:
-                from ...src.chat.replyer.default_generator import DefaultReplyer
+                from ...src.chat.replyer.group_generator import DefaultReplyer
             except ImportError:
                 try:
-                    from src.chat.replyer.default_generator import DefaultReplyer
+                    from src.chat.replyer.group_generator import DefaultReplyer
                 except ImportError:
-                    from modules.MaiBot.src.chat.replyer.default_generator import (
+                    from modules.MaiBot.src.chat.replyer.group_generator import (
                         DefaultReplyer,
                     )
             # 检查方法是否被替换
