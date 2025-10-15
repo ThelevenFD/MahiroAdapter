@@ -131,7 +131,7 @@ class ApiService:
             ) as response:
                 if response.status == 200:
                     data = await response.json()
-                    print(f"API返回数据: {data}")
+                    logger.debug(f"API返回数据: {data}")
                     return self._create_success_response(data, response.status)
                 else:
                     return self._create_error_response(
@@ -169,31 +169,46 @@ class ApiService:
 logger = get_logger("user_info_patch")
 
 # 保存原始方法的引用，用于卸载补丁
-_original_build_prompt_reply_context: (
+_original_build_prompt_reply_context_group: (
     Callable[..., Coroutine[object, object, tuple[str, list[int]]]] | None
 ) = None
+
+_original_build_prompt_reply_context_pri: (
+    Callable[..., Coroutine[object, object, tuple[str, list[int]]]] | None
+) = None
+
 _patch_applied = False
 
 
 def patch_build_prompt_reply_context() -> None:
-    global _original_build_prompt_reply_context, _patch_applied
+    global _original_build_prompt_reply_context_group, _original_build_prompt_reply_context_pri, _patch_applied
 
     try:
         try:
             from ...src.chat.replyer.group_generator import DefaultReplyer
+            from ...src.chat.replyer.private_generator import DefaultReplyer as PriDefaultReplyer
         except ImportError:
             try:
                 from src.chat.replyer.group_generator import DefaultReplyer
+                from ...src.chat.replyer.private_generator import DefaultReplyer as PriDefaultReplyer
             except ImportError:
                 from modules.MaiBot.src.chat.replyer.group_generator import (
                     DefaultReplyer,
                 )
+                from modules.MaiBot.src.chat.replyer.private_generator import DefaultReplyer as PriDefaultReplyer
 
         # 保存原始方法
-        if _original_build_prompt_reply_context is None:
-            _original_build_prompt_reply_context = (
+        if _original_build_prompt_reply_context_group is None:
+            _original_build_prompt_reply_context_group = (
                 DefaultReplyer.build_prompt_reply_context
             )
+
+        # 保存原始方法
+        if _original_build_prompt_reply_context_pri is None:
+            _original_build_prompt_reply_context_pri = (
+                PriDefaultReplyer.build_prompt_reply_context
+            )
+
 
         async def patched_method(
             self: "DefaultReplyer",
@@ -212,12 +227,12 @@ def patch_build_prompt_reply_context() -> None:
                 choosen_actions = chosen_actions
 
             # 检查原始方法是否存在
-            if _original_build_prompt_reply_context is None:
+            if _original_build_prompt_reply_context_group is None:
                 logger.error("[MahiroAdapter] 原始方法未保存，无法调用")
                 return "", []
 
             # 调用原始方法获取基础prompt，兼容不同版本参数名
-            base_result = await _original_build_prompt_reply_context(
+            base_result = await _original_build_prompt_reply_context_group(
                 self,
                 extra_info=extra_info,
                 reply_reason=reply_reason,
@@ -229,7 +244,7 @@ def patch_build_prompt_reply_context() -> None:
 
             base_prompt, token_list = base_result
 
-            logger.debug(f"[MahiroAdapter] 补丁被调用，reply_reason: {reply_reason}")
+            logger.info(f"[MahiroAdapter] 补丁被调用，reply_reason: {reply_reason}")
 
             if not base_prompt:
                 return base_prompt, token_list
@@ -239,12 +254,10 @@ def patch_build_prompt_reply_context() -> None:
                 # 获取用户信息缓存
                 _user_cache = get_all_user_info()
                 logger.debug(f"[MahiroAdapter] 当前缓存内容: {len(_user_cache)} 条记录")
-                print("debug1")
-                print(reply_reason)
+                logger.debug(f"[MahiroAdapter] reply_reason: {reply_reason}")
                 # 从reply_reason中提取发送者信息
                 sender_user_id: str | None = None
                 if '"' in reply_reason or "(" in reply_reason:
-                    print("debug2")
                     sender_name = reply_reason.split("(")[1].strip().split(")")[0]
                     logger.info(f"[MahiroAdapter] 提取到发送者名称: {sender_name}")
                     # 尝试从缓存中找到匹配的用户
@@ -255,10 +268,8 @@ def patch_build_prompt_reply_context() -> None:
                             break
 
                     logger.debug(f"[MahiroAdapter] 匹配到的用户ID: {sender_user_id}")
-                print("debug3")
                 # 如果找到对应的用户信息
                 if sender_user_id and sender_user_id in _user_cache:
-                    print("debug4")
                     user_data = _user_cache[sender_user_id]
 
                     # 检查信息是否过期（10分钟内）
@@ -268,7 +279,126 @@ def patch_build_prompt_reply_context() -> None:
                         if user_data.success:
                             # 成功获取用户信息
                             api_data = user_data.api_data.get("data", {})
-                            print(api_data)
+                            logger.debug(f"API数据: {api_data}")
+                            impression = api_data.get("impression", "未知")
+                            attitude = api_data.get("attitude", "未知")
+                            logger.info(
+                                f"[MahiroAdapter] 提取到用户 {user_data.display_name} 的好感度: {impression}"
+                            )
+                            logger.info(
+                                f"[MahiroAdapter] 提取到用户 {user_data.display_name} 的态度: {attitude}"
+                            )
+                            user_prompt = f"""
+
+【用户背景信息】：当前用户 {user_data.display_name}(QQ:{user_data.user_id}) 的好感度为：{impression}
+你对用户的态度是：{attitude}
+请参考以上用户信息来更好地理解和回应用户的需求。
+
+"""
+                            logger.info(
+                                f"[MahiroAdapter] 成功获取用户 {user_data.display_name} 的信息并注入"
+                            )
+                        else:
+                            # 获取用户信息失败
+                            error_msg = user_data.api_data.get("error", "未知错误")
+                            user_prompt = f"""
+
+【用户信息提示】：当前用户 {user_data.display_name}(QQ:{user_data.user_id}) 的信息获取失败：{error_msg}
+请正常回应即可。
+
+"""
+
+                        # 将用户信息插入到prompt的开头
+                        enhanced_prompt = user_prompt + base_prompt
+
+                        logger.debug(
+                            f"[MahiroAdapter] 已为用户{user_data.display_name}({sender_user_id})添加用户信息提示"
+                        )
+                        logger.debug(
+                            f"[MahiroAdapter] 用户信息获取结果: {'成功' if user_data.success else '失败'}"
+                        )
+                        return enhanced_prompt, token_list
+                    else:
+                        logger.debug("[MahiroAdapter] 用户信息已过期，跳过处理")
+                else:
+                    logger.debug("[MahiroAdapter] 未找到匹配的用户信息")
+
+            except Exception as e:
+                logger.warning(f"[MahiroAdapter] 处理用户信息时出错: {e}")
+
+            # 如果出错或没有用户信息，返回原始prompt
+            return base_prompt, token_list
+        
+        async def patched_method_pri(
+            self: "DefaultReplyer",
+            *_,
+            extra_info: str = "",
+            reply_reason: str = "",
+            available_actions: dict[str, ActionInfo] | None = None,
+            choosen_actions: list[dict[str, object]] | None = None,
+            chosen_actions: list[dict[str, object]] | None = None,
+            enable_tool: bool = True,
+            reply_message: dict[str, object] | None = None,
+            **kwargs,
+        ) -> tuple[str, list[int]]:
+            # 兼容旧版/新版参数名差异
+            if choosen_actions is None and chosen_actions is not None:
+                choosen_actions = chosen_actions
+
+            # 检查原始方法是否存在
+            if _original_build_prompt_reply_context_pri is None:
+                logger.error("[MahiroAdapter] 原始方法未保存，无法调用")
+                return "", []
+
+            # 调用原始方法获取基础prompt，兼容不同版本参数名
+            base_result = await _original_build_prompt_reply_context_pri(
+                self,
+                extra_info=extra_info,
+                reply_reason=reply_reason,
+                available_actions=available_actions,
+                chosen_actions=choosen_actions,
+                enable_tool=enable_tool,
+                reply_message=reply_message,
+            )
+
+            base_prompt, token_list = base_result
+
+            logger.info(f"[MahiroAdapter] 补丁被调用，reply_reason: {reply_reason}")
+
+            if not base_prompt:
+                return base_prompt, token_list
+
+            # 尝试从reply_reason中提取发送者信息，然后获取对应的用户信息
+            try:
+                # 获取用户信息缓存
+                _user_cache = get_all_user_info()
+                logger.debug(f"[MahiroAdapter] 当前缓存内容: {len(_user_cache)} 条记录")
+                logger.debug(f"[MahiroAdapter] reply_reason: {reply_reason}")
+                # 从reply_reason中提取发送者信息
+                sender_user_id: str | None = None
+                if '"' in reply_reason or "(" in reply_reason:
+                    sender_name = reply_reason.split("(")[1].strip().split(")")[0]
+                    logger.info(f"[MahiroAdapter] 提取到发送者名称: {sender_name}")
+                    # 尝试从缓存中找到匹配的用户
+                    for user_id, user_data in _user_cache.items():
+                        display_name = user_data.display_name
+                        if display_name == sender_name:
+                            sender_user_id = user_id
+                            break
+
+                    logger.debug(f"[MahiroAdapter] 匹配到的用户ID: {sender_user_id}")
+                # 如果找到对应的用户信息
+                if sender_user_id and sender_user_id in _user_cache:
+                    user_data = _user_cache[sender_user_id]
+
+                    # 检查信息是否过期（10分钟内）
+                    current_time = time.time()
+                    if (current_time - user_data.timestamp) < 600:
+                        # 创建用户信息prompt片段
+                        if user_data.success:
+                            # 成功获取用户信息
+                            api_data = user_data.api_data.get("data", {})
+                            logger.debug(f"API数据: {api_data}")
                             impression = api_data.get("impression", "未知")
                             attitude = api_data.get("attitude", "未知")
                             logger.info(
@@ -319,6 +449,7 @@ def patch_build_prompt_reply_context() -> None:
             return base_prompt, token_list
 
         # 替换原始方法 - 使用类型忽略来避免类型检查错误
+        PriDefaultReplyer.build_prompt_reply_context = patched_method_pri  # type: ignore[assignment]
         DefaultReplyer.build_prompt_reply_context = patched_method  # type: ignore[assignment]
         _patch_applied = True
         logger.info("[MahiroAdapter] 已成功应用prompt构建补丁 (v0.10.2兼容)")
@@ -333,23 +464,31 @@ def patch_build_prompt_reply_context() -> None:
 
 def remove_user_info_patch() -> bool:
     """移除MahiroAdapter"""
-    global _original_build_prompt_reply_context, _patch_applied
+    global _original_build_prompt_reply_context_group, _original_build_prompt_reply_context_pri, _patch_applied
 
     try:
-        if _patch_applied and _original_build_prompt_reply_context is not None:
+        if _patch_applied and _original_build_prompt_reply_context_group is not None:
             try:
                 from ...src.chat.replyer.group_generator import DefaultReplyer
+                from ...src.chat.replyer.private_generator import DefaultReplyer as PriDefaultReplyer
             except ImportError:
                 try:
                     from src.chat.replyer.group_generator import DefaultReplyer
+                    from ...src.chat.replyer.private_generator import DefaultReplyer as PriDefaultReplyer
                 except ImportError:
                     from modules.MaiBot.src.chat.replyer.group_generator import (
                         DefaultReplyer,
                     )
+                    from ...src.chat.replyer.private_generator import DefaultReplyer as PriDefaultReplyer
             setattr(
                 DefaultReplyer,
                 "build_prompt_reply_context",
-                _original_build_prompt_reply_context,
+                _original_build_prompt_reply_context_group,
+            )
+            setattr(
+                PriDefaultReplyer,
+                "build_prompt_reply_context",
+                _original_build_prompt_reply_context_pri,
             )
             _patch_applied = False
             logger.info("[MahiroAdapter] 已成功移除prompt构建补丁")
@@ -483,21 +622,17 @@ class UserInfoHandler(BaseEventHandler):
             else:
                 debug_enabled = False
 
-            COLOR_DB = "\033[34m"
-            RESET_COLOR = "\033[0m"
             if debug_enabled:
-                print(f"{COLOR_DB}====== 用户信息 DEBUG START ======{RESET_COLOR}")
-                print(
-                    f"{COLOR_DB}[用户信息] 发言者QQ: {user_id}, 昵称: {user_nickname}, 群昵称: {user_cardname}{RESET_COLOR}"
-                )
+                logger.debug("====== 用户信息 DEBUG START ======")
+                logger.debug(f"[用户信息] 发言者QQ: {user_id}, 昵称: {user_nickname}, 群昵称: {user_cardname}")
                 preview = message.plain_text[:100] if message.plain_text else ""
-                print(f"{COLOR_DB}[用户信息] 消息内容: {preview}...{RESET_COLOR}")
-                print(f"{COLOR_DB}====== 用户信息 DEBUG END ======={RESET_COLOR}")
+                logger.debug(f"[用户信息] 消息内容: {preview}...")
+                logger.debug("====== 用户信息 DEBUG END =======")
 
             # 检查用户ID是否存在
             if not user_id:
                 if debug_enabled:
-                    print("[用户信息] 警告: 无法获取发言者QQ号")
+                    logger.warning("[用户信息] 警告: 无法获取发言者QQ号")
                 return True, True, "无法获取发言者QQ号，跳过信息获取", None, None
 
             user_id_str = str(user_id) if user_id is not None else "unknown"
@@ -507,7 +642,7 @@ class UserInfoHandler(BaseEventHandler):
             cached_data = get_user_info(user_id_str)
             if cached_data:
                 if debug_enabled:
-                    print(f"[用户信息] 使用缓存数据: {display_name}({user_id_str})")
+                    logger.debug(f"[用户信息] 使用缓存数据: {display_name}({user_id_str})")
 
                 # 存储到消息上下文
                 if not hasattr(message, "additional_data"):
@@ -520,7 +655,7 @@ class UserInfoHandler(BaseEventHandler):
 
             # 从API获取用户信息
             if debug_enabled:
-                print(f"[用户信息] 从API获取数据: {display_name}({user_id_str})")
+                logger.debug(f"[用户信息] 从API获取数据: {display_name}({user_id_str})")
 
             api_data = await self.api_service.fetch_user_info(user_id=user_id_str)
             user_data = UserInfoData(
@@ -545,7 +680,7 @@ class UserInfoHandler(BaseEventHandler):
 
             if log_info_result:
                 status = "成功" if user_data.success else "失败"
-                print(f"ℹ️ [用户信息获取{status}] {display_name}({user_id_str})")
+                logger.info(f"[用户信息获取{status}] {display_name}({user_id_str})")
 
             # 存储到消息上下文
             if not hasattr(message, "additional_data"):
@@ -564,7 +699,7 @@ class UserInfoHandler(BaseEventHandler):
 
         except Exception as e:
             error_msg = f"用户信息获取过程中发生错误: {e!s}"
-            print(f"❌ [用户信息错误] {error_msg}")
+            logger.error(f"[用户信息错误] {error_msg}")
             # 即使获取出错，也不应该阻止消息处理
             return True, True, error_msg, None, None
 
@@ -647,13 +782,13 @@ class UserInfoPlugin(BasePlugin):
         try:
             result = apply_user_info_patch()
             if result:
-                print("[MahiroAdapter] prompt补丁应用成功 (v0.10.2兼容)")
+                logger.info("[MahiroAdapter] prompt补丁应用成功 (v0.10.2兼容)")
                 # 测试补丁是否真的生效
                 self._test_patch()
             else:
-                print("[MahiroAdapter] prompt补丁应用失败")
+                logger.error("[MahiroAdapter] prompt补丁应用失败")
         except Exception as e:
-            print(f"[MahiroAdapter] 加载补丁时出错: {e}")
+            logger.error(f"[MahiroAdapter] 加载补丁时出错: {e}")
 
     def get_plugin_components(self):
         return [
@@ -674,48 +809,48 @@ class UserInfoPlugin(BasePlugin):
                     )
             # 检查方法是否被替换
             if hasattr(DefaultReplyer.build_prompt_reply_context, "__wrapped__"):
-                print("[MahiroAdapter] 补丁验证成功 - 方法已被包装")
+                logger.info("[MahiroAdapter] 补丁验证成功 - 方法已被包装")
             else:
-                print("[MahiroAdapter] 补丁验证警告 - 方法可能未被正确包装")
+                logger.warning("[MahiroAdapter] 补丁验证警告 - 方法可能未被正确包装")
         except Exception as e:
-            print(f"[MahiroAdapter] 补丁验证失败: {e}")
+            logger.error(f"[MahiroAdapter] 补丁验证失败: {e}")
 
     def on_plugin_load(self) -> None:
         """插件加载时的回调"""
-        print("[MahiroAdapter] 插件加载完成 (v0.10.2兼容)")
+        logger.info("[MahiroAdapter] 插件加载完成 (v0.10.2兼容)")
 
     def on_plugin_unload(self) -> None:
         """插件卸载时的回调 - 移除补丁"""
         try:
             if remove_user_info_patch():
-                print("[MahiroAdapter] 补丁已成功移除")
+                logger.info("[MahiroAdapter] 补丁已成功移除")
             else:
-                print("[MahiroAdapter] 补丁移除失败或未应用")
+                logger.error("[MahiroAdapter] 补丁移除失败或未应用")
         except Exception as e:
-            print(f"[MahiroAdapter] 卸载补丁时出错: {e}")
+            logger.error(f"[MahiroAdapter] 卸载补丁时出错: {e}")
 
         # 清理全局缓存
         global _global_user_cache
         _global_user_cache.clear()
-        print("[MahiroAdapter] 已清理用户信息缓存")
-        print("[MahiroAdapter] 插件卸载完成")
+        logger.info("[MahiroAdapter] 已清理用户信息缓存")
+        logger.info("[MahiroAdapter] 插件卸载完成")
 
     def on_plugin_disable(self) -> None:
         """插件禁用时的回调 - 移除补丁但保留缓存"""
         try:
             if remove_user_info_patch():
-                print("[MahiroAdapter] 补丁已移除（插件已禁用）")
+                logger.info("[MahiroAdapter] 补丁已移除（插件已禁用）")
             else:
-                print("[MahiroAdapter] 补丁移除失败或未应用")
+                logger.error("[MahiroAdapter] 补丁移除失败或未应用")
         except Exception as e:
-            print(f"[MahiroAdapter] 禁用时移除补丁出错: {e}")
+            logger.error(f"[MahiroAdapter] 禁用时移除补丁出错: {e}")
 
     def on_plugin_enable(self) -> None:
         """插件启用时的回调 - 重新应用补丁"""
         try:
             if apply_user_info_patch():
-                print("[MahiroAdapter] 补丁已重新应用（插件已启用）")
+                logger.info("[MahiroAdapter] 补丁已重新应用（插件已启用）")
             else:
-                print("[MahiroAdapter] 补丁重新应用失败")
+                logger.error("[MahiroAdapter] 补丁重新应用失败")
         except Exception as e:
-            print(f"[MahiroAdapter] 启用时应用补丁出错: {e}")
+            logger.error(f"[MahiroAdapter] 启用时应用补丁出错: {e}")
