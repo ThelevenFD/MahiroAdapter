@@ -186,16 +186,16 @@ def patch_build_prompt_reply_context() -> None:
     try:
         try:
             from ...src.chat.replyer.group_generator import DefaultReplyer
-            from ...src.chat.replyer.private_generator import DefaultReplyer as PriDefaultReplyer
+            from ...src.chat.replyer.private_generator import PrivateReplyer
         except ImportError:
             try:
                 from src.chat.replyer.group_generator import DefaultReplyer
-                from ...src.chat.replyer.private_generator import DefaultReplyer as PriDefaultReplyer
+                from src.chat.replyer.private_generator import PrivateReplyer
             except ImportError:
                 from modules.MaiBot.src.chat.replyer.group_generator import (
                     DefaultReplyer,
                 )
-                from modules.MaiBot.src.chat.replyer.private_generator import DefaultReplyer as PriDefaultReplyer
+                from modules.MaiBot.src.chat.replyer.private_generator import PrivateReplyer
 
         # 保存原始方法
         if _original_build_prompt_reply_context_group is None:
@@ -206,7 +206,7 @@ def patch_build_prompt_reply_context() -> None:
         # 保存原始方法
         if _original_build_prompt_reply_context_pri is None:
             _original_build_prompt_reply_context_pri = (
-                PriDefaultReplyer.build_prompt_reply_context
+                PrivateReplyer.build_prompt_reply_context
             )
 
 
@@ -330,7 +330,7 @@ def patch_build_prompt_reply_context() -> None:
             return base_prompt, token_list
         
         async def patched_method_pri(
-            self: "DefaultReplyer",
+            self: "PrivateReplyer",
             *_,
             extra_info: str = "",
             reply_reason: str = "",
@@ -449,7 +449,7 @@ def patch_build_prompt_reply_context() -> None:
             return base_prompt, token_list
 
         # 替换原始方法 - 使用类型忽略来避免类型检查错误
-        PriDefaultReplyer.build_prompt_reply_context = patched_method_pri  # type: ignore[assignment]
+        PrivateReplyer.build_prompt_reply_context = patched_method_pri  # type: ignore[assignment]
         DefaultReplyer.build_prompt_reply_context = patched_method  # type: ignore[assignment]
         _patch_applied = True
         logger.info("[MahiroAdapter] 已成功应用prompt构建补丁 (v0.10.2兼容)")
@@ -470,23 +470,23 @@ def remove_user_info_patch() -> bool:
         if _patch_applied and _original_build_prompt_reply_context_group is not None:
             try:
                 from ...src.chat.replyer.group_generator import DefaultReplyer
-                from ...src.chat.replyer.private_generator import DefaultReplyer as PriDefaultReplyer
+                from ...src.chat.replyer.private_generator import PrivateReplyer
             except ImportError:
                 try:
                     from src.chat.replyer.group_generator import DefaultReplyer
-                    from ...src.chat.replyer.private_generator import DefaultReplyer as PriDefaultReplyer
+                    from src.chat.replyer.private_generator import PrivateReplyer
                 except ImportError:
                     from modules.MaiBot.src.chat.replyer.group_generator import (
                         DefaultReplyer,
                     )
-                    from ...src.chat.replyer.private_generator import DefaultReplyer as PriDefaultReplyer
+                    from modules.MaiBot.src.chat.replyer.private_generator import PrivateReplyer
             setattr(
                 DefaultReplyer,
                 "build_prompt_reply_context",
                 _original_build_prompt_reply_context_group,
             )
             setattr(
-                PriDefaultReplyer,
+                PrivateReplyer,
                 "build_prompt_reply_context",
                 _original_build_prompt_reply_context_pri,
             )
@@ -800,18 +800,25 @@ class UserInfoPlugin(BasePlugin):
         try:
             try:
                 from ...src.chat.replyer.group_generator import DefaultReplyer
+                from ...src.chat.replyer.private_generator import PrivateReplyer
             except ImportError:
                 try:
                     from src.chat.replyer.group_generator import DefaultReplyer
+                    from src.chat.replyer.private_generator import PrivateReplyer
                 except ImportError:
                     from modules.MaiBot.src.chat.replyer.group_generator import (
                         DefaultReplyer,
                     )
+                    from modules.MaiBot.src.chat.replyer.private_generator import PrivateReplyer
             # 检查方法是否被替换
             if hasattr(DefaultReplyer.build_prompt_reply_context, "__wrapped__"):
-                logger.info("[MahiroAdapter] 补丁验证成功 - 方法已被包装")
+                logger.info("[MahiroAdapter] 补丁验证成功 - 群聊方法已被包装")
             else:
-                logger.warning("[MahiroAdapter] 补丁验证警告 - 方法可能未被正确包装")
+                logger.warning("[MahiroAdapter] 补丁验证警告 - 群聊方法可能未被正确包装")
+            if hasattr(PrivateReplyer.build_prompt_reply_context, "__wrapped__"):
+                logger.info("[MahiroAdapter] 补丁验证成功 - 私聊方法已被包装")
+            else:
+                logger.warning("[MahiroAdapter] 补丁验证警告 - 私聊方法可能未被正确包装")
         except Exception as e:
             logger.error(f"[MahiroAdapter] 补丁验证失败: {e}")
 
