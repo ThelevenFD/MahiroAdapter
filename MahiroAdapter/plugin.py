@@ -1,4 +1,5 @@
 import asyncio
+import aiohttp
 import threading
 import time
 from collections.abc import Callable, Coroutine
@@ -110,8 +111,6 @@ class ApiService:
     async def get_session(self):
         """获取或创建HTTP会话"""
         if self._session is None:
-            import aiohttp
-
             self._session = aiohttp.ClientSession()
         return self._session
 
@@ -121,11 +120,8 @@ class ApiService:
             return self._create_error_response("API服务已禁用")
 
         url = f"{self.base_url.rstrip('/')}/get_info/{user_id}"
-
+        session = await self.get_session()
         try:
-            session = await self.get_session()
-            import aiohttp
-
             async with session.post(
                 url, timeout=aiohttp.ClientTimeout(total=self.timeout)
             ) as response:
@@ -166,7 +162,7 @@ class ApiService:
             await self._session.close()
 
 
-logger = get_logger("user_info_patch")
+logger = get_logger("MahiroAdapter")
 
 # 保存原始方法的引用，用于卸载补丁
 _original_build_prompt_reply_context_group: (
@@ -212,34 +208,35 @@ def patch_build_prompt_reply_context() -> None:
 
         async def patched_method(
             self: "DefaultReplyer",
-            *_,
+            reply_message: dict[str, object] | None = None,
             extra_info: str = "",
             reply_reason: str = "",
-            available_actions: dict[str, ActionInfo] | None = None,
-            choosen_actions: list[dict[str, object]] | None = None,
-            chosen_actions: list[dict[str, object]] | None = None,
+            available_actions: dict[str, object] | None = None,  # 改为更通用的类型
+            chosen_actions: list | None = None,  # 移除具体类型，使用通用list
             enable_tool: bool = True,
-            reply_message: dict[str, object] | None = None,
+            reply_time_point: float | None = None,
+            *args,
             **kwargs,
         ) -> tuple[str, list[int]]:
-            # 兼容旧版/新版参数名差异
-            if choosen_actions is None and chosen_actions is not None:
-                choosen_actions = chosen_actions
-
+            # 设置默认的 reply_time_point
+            if reply_time_point is None:
+                reply_time_point = time.time()
+            
             # 检查原始方法是否存在
             if _original_build_prompt_reply_context_group is None:
                 logger.error("[MahiroAdapter] 原始方法未保存，无法调用")
                 return "", []
 
-            # 调用原始方法获取基础prompt，兼容不同版本参数名
+            # 调用原始方法获取基础prompt
             base_result = await _original_build_prompt_reply_context_group(
                 self,
+                reply_message=reply_message,
                 extra_info=extra_info,
                 reply_reason=reply_reason,
                 available_actions=available_actions,
-                chosen_actions=choosen_actions,
+                chosen_actions=chosen_actions,
                 enable_tool=enable_tool,
-                reply_message=reply_message,
+                reply_time_point=reply_time_point,
             )
 
             base_prompt, token_list = base_result
@@ -255,6 +252,7 @@ def patch_build_prompt_reply_context() -> None:
                 _user_cache = get_all_user_info()
                 logger.debug(f"[MahiroAdapter] 当前缓存内容: {len(_user_cache)} 条记录")
                 logger.debug(f"[MahiroAdapter] reply_reason: {reply_reason}")
+                
                 # 从reply_reason中提取发送者信息
                 sender_user_id: str | None = None
                 if '"' in reply_reason or "(" in reply_reason:
@@ -268,6 +266,7 @@ def patch_build_prompt_reply_context() -> None:
                             break
 
                     logger.debug(f"[MahiroAdapter] 匹配到的用户ID: {sender_user_id}")
+                
                 # 如果找到对应的用户信息
                 if sender_user_id and sender_user_id in _user_cache:
                     user_data = _user_cache[sender_user_id]
@@ -290,11 +289,11 @@ def patch_build_prompt_reply_context() -> None:
                             )
                             user_prompt = f"""
 
-【用户背景信息】：当前用户 {user_data.display_name}(QQ:{user_data.user_id}) 的好感度为：{impression}
-你对用户的态度是：{attitude}
-请参考以上用户信息来更好地理解和回应用户的需求。
+        【用户背景信息】：当前用户 {user_data.display_name}(QQ:{user_data.user_id}) 的好感度为：{impression}
+        你对用户的态度是：{attitude}
+        请参考以上用户信息来更好地理解和回应用户的需求。
 
-"""
+        """
                             logger.info(
                                 f"[MahiroAdapter] 成功获取用户 {user_data.display_name} 的信息并注入"
                             )
@@ -303,10 +302,10 @@ def patch_build_prompt_reply_context() -> None:
                             error_msg = user_data.api_data.get("error", "未知错误")
                             user_prompt = f"""
 
-【用户信息提示】：当前用户 {user_data.display_name}(QQ:{user_data.user_id}) 的信息获取失败：{error_msg}
-请正常回应即可。
+        【用户信息提示】：当前用户 {user_data.display_name}(QQ:{user_data.user_id}) 的信息获取失败：{error_msg}
+        请正常回应即可。
 
-"""
+        """
 
                         # 将用户信息插入到prompt的开头
                         enhanced_prompt = user_prompt + base_prompt
@@ -331,20 +330,16 @@ def patch_build_prompt_reply_context() -> None:
         
         async def patched_method_pri(
             self: "PrivateReplyer",
-            *_,
+            reply_message: dict[str, object] | None = None,
             extra_info: str = "",
             reply_reason: str = "",
-            available_actions: dict[str, ActionInfo] | None = None,
-            choosen_actions: list[dict[str, object]] | None = None,
-            chosen_actions: list[dict[str, object]] | None = None,
+            available_actions: dict[str, object] | None = None,  # 改为更通用的类型
+            chosen_actions: list | None = None,  # 移除具体类型，使用通用list
             enable_tool: bool = True,
-            reply_message: dict[str, object] | None = None,
+            reply_time_point: float | None = None,
+            *args,
             **kwargs,
         ) -> tuple[str, list[int]]:
-            # 兼容旧版/新版参数名差异
-            if choosen_actions is None and chosen_actions is not None:
-                choosen_actions = chosen_actions
-
             # 检查原始方法是否存在
             if _original_build_prompt_reply_context_pri is None:
                 logger.error("[MahiroAdapter] 原始方法未保存，无法调用")
@@ -356,9 +351,10 @@ def patch_build_prompt_reply_context() -> None:
                 extra_info=extra_info,
                 reply_reason=reply_reason,
                 available_actions=available_actions,
-                chosen_actions=choosen_actions,
+                chosen_actions=chosen_actions,
                 enable_tool=enable_tool,
                 reply_message=reply_message,
+                reply_time_point=reply_time_point,
             )
 
             base_prompt, token_list = base_result
