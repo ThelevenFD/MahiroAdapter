@@ -14,7 +14,7 @@
 
 ### 前置要求
 
-- Maim Bot f6e33d8或更高版本
+- Maim Bot V0.11.0或以上版本
 - 真寻Bot插件：zhenxun_plugin_MaimAdapter
 - Python 3.8+
 
@@ -79,6 +79,12 @@ enable_debug = false
 - 初始版本发布
 - 支持Maim f6e33d8及以上版本
 - 完整的用户信息获取和缓存功能
+
+### v1.1.0
+
+* 由于时间问题 以后的更新不会向前支持 若要使用maim以前的版本请自行翻阅commit
+* 适配MaiBot v0.11.0至v0.11.1版本
+* 增加prompt注入内容
 
 ## 相关项目
 
