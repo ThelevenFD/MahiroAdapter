@@ -1,4 +1,5 @@
 import asyncio
+import aiohttp
 import threading
 import time
 from collections.abc import Callable, Coroutine
@@ -101,31 +102,53 @@ def clear_expired_cache() -> int:
 class ApiService:
     """API服务类 - 负责与外部API通信"""
 
-    def __init__(self, base_url: str, timeout: float, enabled: bool):
+    def __init__(self, base_url: str,keep_alive_url: str, timeout: float, enable_keep_alive: bool, enable_api: bool):
         self.base_url = base_url
+        self.keep_alive_url = keep_alive_url
         self.timeout = timeout
-        self.enabled = enabled
+        self.enabled_keep_alive = enable_keep_alive
+        self.enable_api = enable_api
         self._session = None
+        if self.enabled_keep_alive:
+            asyncio.create_task(self.keep_alive())
 
     async def get_session(self):
         """获取或创建HTTP会话"""
         if self._session is None:
-            import aiohttp
-
             self._session = aiohttp.ClientSession()
         return self._session
 
+    async def keep_alive(self):
+        """bot保活"""
+        session = await self.get_session()
+        while True:
+            try:
+                async with session.get(
+                    self.keep_alive_url, timeout=aiohttp.ClientTimeout(total=self.timeout)
+                ) as resp:
+                    response_text = await resp.text()
+                    logger.debug(response_text)
+                    if resp.status == 200:
+                        logger.info("Keep Alive!!")
+                    else:
+                        logger.warning(f"Keep alive request failed with status: {resp.status}")
+            except asyncio.TimeoutError:
+                logger.error("Keep alive request timeout")
+            except aiohttp.ClientError as e:
+                logger.error(f"HTTP client error: {e}")
+            except Exception as e:
+                logger.error(f"Unexpected error: {e}")
+            
+            await asyncio.sleep(6)
+
     async def fetch_user_info(self, user_id: str) -> dict:
         """获取用户信息"""
-        if not self.enabled:
+        if not self.enable_api:
             return self._create_error_response("API服务已禁用")
 
         url = f"{self.base_url.rstrip('/')}/get_info/{user_id}"
-
+        session = await self.get_session()
         try:
-            session = await self.get_session()
-            import aiohttp
-
             async with session.post(
                 url, timeout=aiohttp.ClientTimeout(total=self.timeout)
             ) as response:
@@ -166,7 +189,7 @@ class ApiService:
             await self._session.close()
 
 
-logger = get_logger("user_info_patch")
+logger = get_logger("MahiroAdapter")
 
 # 保存原始方法的引用，用于卸载补丁
 _original_build_prompt_reply_context_group: (
@@ -212,34 +235,35 @@ def patch_build_prompt_reply_context() -> None:
 
         async def patched_method(
             self: "DefaultReplyer",
-            *_,
+            reply_message: dict[str, object] | None = None,
             extra_info: str = "",
             reply_reason: str = "",
-            available_actions: dict[str, ActionInfo] | None = None,
-            choosen_actions: list[dict[str, object]] | None = None,
-            chosen_actions: list[dict[str, object]] | None = None,
+            available_actions: dict[str, object] | None = None,  # 改为更通用的类型
+            chosen_actions: list | None = None,  # 移除具体类型，使用通用list
             enable_tool: bool = True,
-            reply_message: dict[str, object] | None = None,
+            reply_time_point: float | None = None,
+            *args,
             **kwargs,
         ) -> tuple[str, list[int]]:
-            # 兼容旧版/新版参数名差异
-            if choosen_actions is None and chosen_actions is not None:
-                choosen_actions = chosen_actions
-
+            # 设置默认的 reply_time_point
+            if reply_time_point is None:
+                reply_time_point = time.time()
+            
             # 检查原始方法是否存在
             if _original_build_prompt_reply_context_group is None:
                 logger.error("[MahiroAdapter] 原始方法未保存，无法调用")
                 return "", []
 
-            # 调用原始方法获取基础prompt，兼容不同版本参数名
+            # 调用原始方法获取基础prompt
             base_result = await _original_build_prompt_reply_context_group(
                 self,
+                reply_message=reply_message,
                 extra_info=extra_info,
                 reply_reason=reply_reason,
                 available_actions=available_actions,
-                chosen_actions=choosen_actions,
+                chosen_actions=chosen_actions,
                 enable_tool=enable_tool,
-                reply_message=reply_message,
+                reply_time_point=reply_time_point,
             )
 
             base_prompt, token_list = base_result
@@ -255,6 +279,7 @@ def patch_build_prompt_reply_context() -> None:
                 _user_cache = get_all_user_info()
                 logger.debug(f"[MahiroAdapter] 当前缓存内容: {len(_user_cache)} 条记录")
                 logger.debug(f"[MahiroAdapter] reply_reason: {reply_reason}")
+                
                 # 从reply_reason中提取发送者信息
                 sender_user_id: str | None = None
                 if '"' in reply_reason or "(" in reply_reason:
@@ -268,6 +293,7 @@ def patch_build_prompt_reply_context() -> None:
                             break
 
                     logger.debug(f"[MahiroAdapter] 匹配到的用户ID: {sender_user_id}")
+                
                 # 如果找到对应的用户信息
                 if sender_user_id and sender_user_id in _user_cache:
                     user_data = _user_cache[sender_user_id]
@@ -288,28 +314,35 @@ def patch_build_prompt_reply_context() -> None:
                             logger.info(
                                 f"[MahiroAdapter] 提取到用户 {user_data.display_name} 的态度: {attitude}"
                             )
+                            impression_prompt="""
+好感度等级描述:
+好感度[0-10]：路人 (态度：普通) 你与用户关系是路人，对用户态度普通。不会主动接近用户，但也不会排斥用户，保持基本礼貌和活泼。
+好感度[10-25]：陌生 (态度：普通，警惕) 你与用户关系是陌生，对用户态度普通。对用户保持基本礼貌和活泼，不会对用户说关于你隐私的事情。可接受一点点肢体接触 (比如：摸摸头，摸摸脸)，亲密接触除外。
+好感度[25-50]：朋友 (态度：友好) 你与用户关系是朋友，对用户态度友好。可接受一些肢体接触 (比如：牵手)，亲密接触除外。
+好感度[50-90]：熟悉 (态度：朋友，亲近) 你与用户态度是熟悉，对用户态度是朋友。可接受更多肢体接触 (比如：拥抱)，亲密接触除外。
+好感度[90-140]：更加熟悉 (态度：非常要好的朋友，依赖) 你与用户态度是更加熟悉，对用户态度是非常要好的朋友，开始依赖对方。可接受更多肢体接触，可接受一点点亲密接触。
+好感度[140-200]：信赖 (态度：依赖，信任) 你与用户态度是信赖，对用户态度是比较依赖对方，非常信任。可接受更多肢体接触，可接受更多亲密接触。
+好感度[200-270]：相知 (态度：可以分享秘密的朋友) 你与用户态度是相知，对用户态度已达到可分享小秘密的地步。可接受更多肢体接触，可接受大部分亲密接触。
+好感度[270-400]：厚谊 (态度：深厚友谊，重要的人) 你与用户态度是厚谊，对用户态度是建立了深厚友谊，用户是非常重要的人。可接受大部分亲密接触，会接受用户部分要求。 
+好感度[>400]：恋人 (态度：亲密，爱恋) 你与用户态度是恋人，对用户态度是亲密爱恋。可接受恋人间的亲密接触，尽可能地接受用户任何要求。"""
                             user_prompt = f"""
 
-【用户背景信息】：当前用户 {user_data.display_name}(QQ:{user_data.user_id}) 的好感度为：{impression}
-你对用户的态度是：{attitude}
-请参考以上用户信息来更好地理解和回应用户的需求。
+        【用户背景信息】：当前用户 {user_data.display_name}(QQ:{user_data.user_id}) 的好感度为：{impression}
+        你对用户的态度是：{attitude}
+        请参考以上用户信息来更好地理解和回应用户的需求。
 
-"""
+        """
+                            enhanced_prompt = user_prompt+ impression_prompt + base_prompt
                             logger.info(
                                 f"[MahiroAdapter] 成功获取用户 {user_data.display_name} 的信息并注入"
                             )
                         else:
                             # 获取用户信息失败
-                            error_msg = user_data.api_data.get("error", "未知错误")
                             user_prompt = f"""
-
-【用户信息提示】：当前用户 {user_data.display_name}(QQ:{user_data.user_id}) 的信息获取失败：{error_msg}
-请正常回应即可。
-
+【用户信息提示】：当前用户 {user_data.display_name}(QQ:{user_data.user_id}) 的好感度为：10
+你对用户的态度是：一般
 """
-
-                        # 将用户信息插入到prompt的开头
-                        enhanced_prompt = user_prompt + base_prompt
+                            enhanced_prompt = user_prompt + base_prompt
 
                         logger.debug(
                             f"[MahiroAdapter] 已为用户{user_data.display_name}({sender_user_id})添加用户信息提示"
@@ -331,20 +364,16 @@ def patch_build_prompt_reply_context() -> None:
         
         async def patched_method_pri(
             self: "PrivateReplyer",
-            *_,
+            reply_message: dict[str, object] | None = None,
             extra_info: str = "",
             reply_reason: str = "",
-            available_actions: dict[str, ActionInfo] | None = None,
-            choosen_actions: list[dict[str, object]] | None = None,
-            chosen_actions: list[dict[str, object]] | None = None,
+            available_actions: dict[str, object] | None = None,  # 改为更通用的类型
+            chosen_actions: list | None = None,  # 移除具体类型，使用通用list
             enable_tool: bool = True,
-            reply_message: dict[str, object] | None = None,
+            reply_time_point: float | None = None,
+            *args,
             **kwargs,
         ) -> tuple[str, list[int]]:
-            # 兼容旧版/新版参数名差异
-            if choosen_actions is None and chosen_actions is not None:
-                choosen_actions = chosen_actions
-
             # 检查原始方法是否存在
             if _original_build_prompt_reply_context_pri is None:
                 logger.error("[MahiroAdapter] 原始方法未保存，无法调用")
@@ -356,9 +385,10 @@ def patch_build_prompt_reply_context() -> None:
                 extra_info=extra_info,
                 reply_reason=reply_reason,
                 available_actions=available_actions,
-                chosen_actions=choosen_actions,
+                chosen_actions=chosen_actions,
                 enable_tool=enable_tool,
                 reply_message=reply_message,
+                reply_time_point=reply_time_point,
             )
 
             base_prompt, token_list = base_result
@@ -407,28 +437,38 @@ def patch_build_prompt_reply_context() -> None:
                             logger.info(
                                 f"[MahiroAdapter] 提取到用户 {user_data.display_name} 的态度: {attitude}"
                             )
+                            impression_prompt="""
+好感度等级描述:
+好感度[0-10]：路人 (态度：普通) 你与用户关系是路人，对用户态度普通。不会主动接近用户，但也不会排斥用户，保持基本礼貌和活泼。
+好感度[10-25]：陌生 (态度：普通，警惕) 你与用户关系是陌生，对用户态度普通。对用户保持基本礼貌和活泼，不会对用户说关于你隐私的事情。可接受一点点肢体接触 (比如：摸摸头，摸摸脸)，亲密接触除外。
+好感度[25-50]：朋友 (态度：友好) 你与用户关系是朋友，对用户态度友好。可接受一些肢体接触 (比如：牵手)，亲密接触除外。
+好感度[50-90]：熟悉 (态度：朋友，亲近) 你与用户态度是熟悉，对用户态度是朋友。可接受更多肢体接触 (比如：拥抱)，亲密接触除外。
+好感度[90-140]：更加熟悉 (态度：非常要好的朋友，依赖) 你与用户态度是更加熟悉，对用户态度是非常要好的朋友，开始依赖对方。可接受更多肢体接触，可接受一点点亲密接触。
+好感度[140-200]：信赖 (态度：依赖，信任) 你与用户态度是信赖，对用户态度是比较依赖对方，非常信任。可接受更多肢体接触，可接受更多亲密接触。
+好感度[200-270]：相知 (态度：可以分享秘密的朋友) 你与用户态度是相知，对用户态度已达到可分享小秘密的地步。可接受更多肢体接触，可接受大部分亲密接触。
+好感度[270-400]：厚谊 (态度：深厚友谊，重要的人) 你与用户态度是厚谊，对用户态度是建立了深厚友谊，用户是非常重要的人。可接受大部分亲密接触，会接受用户部分要求。 
+好感度[>400]：恋人 (态度：亲密，爱恋) 你与用户态度是恋人，对用户态度是亲密爱恋。可接受恋人间的亲密接触，尽可能地接受用户任何要求。"""
                             user_prompt = f"""
-
 【用户背景信息】：当前用户 {user_data.display_name}(QQ:{user_data.user_id}) 的好感度为：{impression}
 你对用户的态度是：{attitude}
 请参考以上用户信息来更好地理解和回应用户的需求。
 
 """
+                            enhanced_prompt = user_prompt+ impression_prompt + base_prompt
                             logger.info(
                                 f"[MahiroAdapter] 成功获取用户 {user_data.display_name} 的信息并注入"
                             )
                         else:
                             # 获取用户信息失败
-                            error_msg = user_data.api_data.get("error", "未知错误")
                             user_prompt = f"""
 
-【用户信息提示】：当前用户 {user_data.display_name}(QQ:{user_data.user_id}) 的信息获取失败：{error_msg}
-请正常回应即可。
+【用户信息提示】：当前用户 {user_data.display_name}(QQ:{user_data.user_id}) 的好感度为：10
+你对用户的态度是：一般
 
 """
-
+                            enhanced_prompt = user_prompt + base_prompt
                         # 将用户信息插入到prompt的开头
-                        enhanced_prompt = user_prompt + base_prompt
+                        
 
                         logger.debug(
                             f"[MahiroAdapter] 已为用户{user_data.display_name}({sender_user_id})添加用户信息提示"
@@ -541,38 +581,20 @@ class UserInfoHandler(BaseEventHandler):
             return
 
         # 获取配置 - 使用安全的类型转换
-        base_url_config = self.get_config(
+        base_url = self.get_config(
             "user_info.api_base_url", "http://10.255.255.254"
         )
-        if isinstance(base_url_config, str):
-            base_url = base_url_config
-        else:
-            base_url = (
-                str(base_url_config)
-                if base_url_config is not None
-                else "http://10.255.255.254"
-            )
-
-        timeout_config = self.get_config("user_info.request_timeout", 5.0)
-        if isinstance(timeout_config, (int, float)):
-            timeout = float(timeout_config)
-        elif isinstance(timeout_config, str):
-            try:
-                timeout = float(timeout_config)
-            except ValueError:
-                timeout = 5.0
-        else:
-            timeout = 5.0
-
-        enable_api_config = self.get_config("user_info.enable_info", True)
-        if isinstance(enable_api_config, bool):
-            enable_api = enable_api_config
-        elif isinstance(enable_api_config, (str, int)):
-            enable_api = bool(enable_api_config)
-        else:
-            enable_api = True
-
-        self.api_service = ApiService(base_url, timeout, enable_api)
+        keep_alive_url = self.get_config("user_info.keep_alive_url", "")
+        timeout = self.get_config("user_info.request_timeout", 5.0)
+        enable_keep_alive = self.get_config("user_info.enable_keep_alive", False)
+        enable_api = self.get_config("user_info.enable_info", True)
+        self.api_service = ApiService(
+            base_url=base_url,
+            timeout=timeout,
+            enable_api=enable_api,
+            enable_keep_alive=enable_keep_alive,
+            keep_alive_url=keep_alive_url,
+        )
         self._initialized = True
 
     @override
@@ -585,13 +607,7 @@ class UserInfoHandler(BaseEventHandler):
         """
         try:
             # 获取配置 - 使用安全的类型转换
-            enable_info_config = self.get_config("user_info.enable_info", True)
-            if isinstance(enable_info_config, bool):
-                enable_info = enable_info_config
-            elif isinstance(enable_info_config, (str, int)):
-                enable_info = bool(enable_info_config)
-            else:
-                enable_info = True
+            enable_info = self.get_config("user_info.enable_info", True)
 
             if not enable_info:
                 return True, True, "用户信息获取已禁用", None, None
@@ -744,14 +760,23 @@ class UserInfoPlugin(BasePlugin):
             "name": ConfigField(
                 type=str, default="MahiroAdapter", description="插件名称"
             ),
-            "version": ConfigField(type=str, default="1.0.0", description="插件版本"),
+            "version": ConfigField(type=str, default="1.1.0", description="插件版本"),
             "enabled": ConfigField(type=bool, default=True, description="是否启用插件"),
+            "config_version": ConfigField(type=str, default="1.1.0", description="配置文件版本"),
         },
         "user_info": {
             "api_base_url": ConfigField(
                 type=str,
                 default="http://10.255.255.254:8080",
                 description="你的真寻连接地址",
+            ),
+            "keep_alive_url": ConfigField(
+                type=str,
+                default="",
+                description="你的保活地址",
+            ),
+            "enable_keep_alive": ConfigField(
+                type=bool, default=False, description="是否启用保活"
             ),
             "enable_info": ConfigField(
                 type=bool, default=True, description="是否启用好感度获取"
