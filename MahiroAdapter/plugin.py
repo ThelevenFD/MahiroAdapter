@@ -287,6 +287,17 @@ def patch_build_prompt_reply_context() -> None:
                             logger.info(
                                 f"[MahiroAdapter] 提取到用户 {user_data.display_name} 的态度: {attitude}"
                             )
+                            impression_prompt="""
+好感度等级描述:
+好感度[0-10]：路人 (态度：普通) 你与用户关系是路人，对用户态度普通。不会主动接近用户，但也不会排斥用户，保持基本礼貌和活泼。
+好感度[10-25]：陌生 (态度：普通，警惕) 你与用户关系是陌生，对用户态度普通。对用户保持基本礼貌和活泼，不会对用户说关于你隐私的事情。可接受一点点肢体接触 (比如：摸摸头，摸摸脸)，亲密接触除外。
+好感度[25-50]：朋友 (态度：友好) 你与用户关系是朋友，对用户态度友好。可接受一些肢体接触 (比如：牵手)，亲密接触除外。
+好感度[50-90]：熟悉 (态度：朋友，亲近) 你与用户态度是熟悉，对用户态度是朋友。可接受更多肢体接触 (比如：拥抱)，亲密接触除外。
+好感度[90-140]：更加熟悉 (态度：非常要好的朋友，依赖) 你与用户态度是更加熟悉，对用户态度是非常要好的朋友，开始依赖对方。可接受更多肢体接触，可接受一点点亲密接触。
+好感度[140-200]：信赖 (态度：依赖，信任) 你与用户态度是信赖，对用户态度是比较依赖对方，非常信任。可接受更多肢体接触，可接受更多亲密接触。
+好感度[200-270]：相知 (态度：可以分享秘密的朋友) 你与用户态度是相知，对用户态度已达到可分享小秘密的地步。可接受更多肢体接触，可接受大部分亲密接触。
+好感度[270-400]：厚谊 (态度：深厚友谊，重要的人) 你与用户态度是厚谊，对用户态度是建立了深厚友谊，用户是非常重要的人。可接受大部分亲密接触，会接受用户部分要求。 
+好感度[>400]：恋人 (态度：亲密，爱恋) 你与用户态度是恋人，对用户态度是亲密爱恋。可接受恋人间的亲密接触，尽可能地接受用户任何要求。"""
                             user_prompt = f"""
 
         【用户背景信息】：当前用户 {user_data.display_name}(QQ:{user_data.user_id}) 的好感度为：{impression}
@@ -294,21 +305,17 @@ def patch_build_prompt_reply_context() -> None:
         请参考以上用户信息来更好地理解和回应用户的需求。
 
         """
+                            enhanced_prompt = user_prompt+ impression_prompt + base_prompt
                             logger.info(
                                 f"[MahiroAdapter] 成功获取用户 {user_data.display_name} 的信息并注入"
                             )
                         else:
                             # 获取用户信息失败
-                            error_msg = user_data.api_data.get("error", "未知错误")
                             user_prompt = f"""
-
-        【用户信息提示】：当前用户 {user_data.display_name}(QQ:{user_data.user_id}) 的信息获取失败：{error_msg}
-        请正常回应即可。
-
-        """
-
-                        # 将用户信息插入到prompt的开头
-                        enhanced_prompt = user_prompt + base_prompt
+【用户信息提示】：当前用户 {user_data.display_name}(QQ:{user_data.user_id}) 的好感度为：10
+你对用户的态度是：一般
+"""
+                            enhanced_prompt = user_prompt + base_prompt
 
                         logger.debug(
                             f"[MahiroAdapter] 已为用户{user_data.display_name}({sender_user_id})添加用户信息提示"
@@ -403,28 +410,38 @@ def patch_build_prompt_reply_context() -> None:
                             logger.info(
                                 f"[MahiroAdapter] 提取到用户 {user_data.display_name} 的态度: {attitude}"
                             )
+                            impression_prompt="""
+好感度等级描述:
+好感度[0-10]：路人 (态度：普通) 你与用户关系是路人，对用户态度普通。不会主动接近用户，但也不会排斥用户，保持基本礼貌和活泼。
+好感度[10-25]：陌生 (态度：普通，警惕) 你与用户关系是陌生，对用户态度普通。对用户保持基本礼貌和活泼，不会对用户说关于你隐私的事情。可接受一点点肢体接触 (比如：摸摸头，摸摸脸)，亲密接触除外。
+好感度[25-50]：朋友 (态度：友好) 你与用户关系是朋友，对用户态度友好。可接受一些肢体接触 (比如：牵手)，亲密接触除外。
+好感度[50-90]：熟悉 (态度：朋友，亲近) 你与用户态度是熟悉，对用户态度是朋友。可接受更多肢体接触 (比如：拥抱)，亲密接触除外。
+好感度[90-140]：更加熟悉 (态度：非常要好的朋友，依赖) 你与用户态度是更加熟悉，对用户态度是非常要好的朋友，开始依赖对方。可接受更多肢体接触，可接受一点点亲密接触。
+好感度[140-200]：信赖 (态度：依赖，信任) 你与用户态度是信赖，对用户态度是比较依赖对方，非常信任。可接受更多肢体接触，可接受更多亲密接触。
+好感度[200-270]：相知 (态度：可以分享秘密的朋友) 你与用户态度是相知，对用户态度已达到可分享小秘密的地步。可接受更多肢体接触，可接受大部分亲密接触。
+好感度[270-400]：厚谊 (态度：深厚友谊，重要的人) 你与用户态度是厚谊，对用户态度是建立了深厚友谊，用户是非常重要的人。可接受大部分亲密接触，会接受用户部分要求。 
+好感度[>400]：恋人 (态度：亲密，爱恋) 你与用户态度是恋人，对用户态度是亲密爱恋。可接受恋人间的亲密接触，尽可能地接受用户任何要求。"""
                             user_prompt = f"""
-
 【用户背景信息】：当前用户 {user_data.display_name}(QQ:{user_data.user_id}) 的好感度为：{impression}
 你对用户的态度是：{attitude}
 请参考以上用户信息来更好地理解和回应用户的需求。
 
 """
+                            enhanced_prompt = user_prompt+ impression_prompt + base_prompt
                             logger.info(
                                 f"[MahiroAdapter] 成功获取用户 {user_data.display_name} 的信息并注入"
                             )
                         else:
                             # 获取用户信息失败
-                            error_msg = user_data.api_data.get("error", "未知错误")
                             user_prompt = f"""
 
-【用户信息提示】：当前用户 {user_data.display_name}(QQ:{user_data.user_id}) 的信息获取失败：{error_msg}
-请正常回应即可。
+【用户信息提示】：当前用户 {user_data.display_name}(QQ:{user_data.user_id}) 的好感度为：10
+你对用户的态度是：一般
 
 """
-
+                            enhanced_prompt = user_prompt + base_prompt
                         # 将用户信息插入到prompt的开头
-                        enhanced_prompt = user_prompt + base_prompt
+                        
 
                         logger.debug(
                             f"[MahiroAdapter] 已为用户{user_data.display_name}({sender_user_id})添加用户信息提示"
@@ -740,7 +757,7 @@ class UserInfoPlugin(BasePlugin):
             "name": ConfigField(
                 type=str, default="MahiroAdapter", description="插件名称"
             ),
-            "version": ConfigField(type=str, default="1.0.0", description="插件版本"),
+            "version": ConfigField(type=str, default="1.0.1", description="插件版本"),
             "enabled": ConfigField(type=bool, default=True, description="是否启用插件"),
         },
         "user_info": {
