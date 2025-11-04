@@ -370,7 +370,6 @@ def patch_build_prompt_reply_context() -> None:
             available_actions: dict[str, object] | None = None,  # 改为更通用的类型
             chosen_actions: list | None = None,  # 移除具体类型，使用通用list
             enable_tool: bool = True,
-            reply_time_point: float | None = None,
             *args,
             **kwargs,
         ) -> tuple[str, list[int]]:
@@ -388,7 +387,6 @@ def patch_build_prompt_reply_context() -> None:
                 chosen_actions=chosen_actions,
                 enable_tool=enable_tool,
                 reply_message=reply_message,
-                reply_time_point=reply_time_point,
             )
 
             base_prompt, token_list = base_result
