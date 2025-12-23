@@ -5,7 +5,8 @@ import time
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from typing import TypedDict, override
-
+from src.chat.replyer.group_generator import DefaultReplyer
+from src.chat.replyer.private_generator import PrivateReplyer
 from src.common.logger import get_logger
 from src.plugin_system import (
     ActionInfo,
@@ -92,7 +93,7 @@ def clear_expired_cache() -> int:
     global _global_user_cache
     current_time = time.time()
     expired_keys = [
-        k for k, v in _global_user_cache.items() if current_time - v["timestamp"] > 600
+        k for k, v in _global_user_cache.items() if current_time - v["timestamp"] > 43200
     ]
     for key in expired_keys:
         del _global_user_cache[key]
@@ -132,8 +133,8 @@ class ApiService:
                         logger.info("Keep Alive!!")
                     else:
                         logger.warning(f"Keep alive request failed with status: {resp.status}")
-            except asyncio.TimeoutError:
-                logger.error("Keep alive request timeout")
+            except asyncio.TimeoutError as e:
+                logger.error(f"Keep alive request timeout: {e}")
             except aiohttp.ClientError as e:
                 logger.error(f"HTTP client error: {e}")
             except Exception as e:
@@ -193,7 +194,7 @@ logger = get_logger("MahiroAdapter")
 
 # 保存原始方法的引用，用于卸载补丁
 _original_build_prompt_reply_context_group: (
-    Callable[..., Coroutine[object, object, tuple[str, list[int]]]] | None
+    Callable[..., Coroutine[object, object, tuple[str, list[int], list[str], str]]] | None
 ) = None
 
 _original_build_prompt_reply_context_pri: (
@@ -205,21 +206,7 @@ _patch_applied = False
 
 def patch_build_prompt_reply_context() -> None:
     global _original_build_prompt_reply_context_group, _original_build_prompt_reply_context_pri, _patch_applied
-
     try:
-        try:
-            from ...src.chat.replyer.group_generator import DefaultReplyer
-            from ...src.chat.replyer.private_generator import PrivateReplyer
-        except ImportError:
-            try:
-                from src.chat.replyer.group_generator import DefaultReplyer
-                from src.chat.replyer.private_generator import PrivateReplyer
-            except ImportError:
-                from modules.MaiBot.src.chat.replyer.group_generator import (
-                    DefaultReplyer,
-                )
-                from modules.MaiBot.src.chat.replyer.private_generator import PrivateReplyer
-
         # 保存原始方法
         if _original_build_prompt_reply_context_group is None:
             _original_build_prompt_reply_context_group = (
@@ -242,9 +229,11 @@ def patch_build_prompt_reply_context() -> None:
             chosen_actions: list | None = None,  # 移除具体类型，使用通用list
             enable_tool: bool = True,
             reply_time_point: float | None = None,
+            think_level: int = 1,
+            unknown_words: list | None = None,
             *args,
             **kwargs,
-        ) -> tuple[str, list[int]]:
+        ) -> tuple[str, list[int], list[str], str]:
             # 设置默认的 reply_time_point
             if reply_time_point is None:
                 reply_time_point = time.time()
@@ -252,7 +241,7 @@ def patch_build_prompt_reply_context() -> None:
             # 检查原始方法是否存在
             if _original_build_prompt_reply_context_group is None:
                 logger.error("[MahiroAdapter] 原始方法未保存，无法调用")
-                return "", []
+                return "", [], [], ""
 
             # 调用原始方法获取基础prompt
             base_result = await _original_build_prompt_reply_context_group(
@@ -264,14 +253,16 @@ def patch_build_prompt_reply_context() -> None:
                 chosen_actions=chosen_actions,
                 enable_tool=enable_tool,
                 reply_time_point=reply_time_point,
+                think_level=think_level,
+                unknown_words=unknown_words,
             )
 
-            base_prompt, token_list = base_result
+            base_prompt, selected_expressions, timing_logs, almost_zero_str = base_result
 
             logger.info(f"[MahiroAdapter] 补丁被调用，reply_reason: {reply_reason}")
 
             if not base_prompt:
-                return base_prompt, token_list
+                return base_prompt, selected_expressions, timing_logs, almost_zero_str
 
             # 尝试从reply_reason中提取发送者信息，然后获取对应的用户信息
             try:
@@ -300,7 +291,7 @@ def patch_build_prompt_reply_context() -> None:
 
                     # 检查信息是否过期（10分钟内）
                     current_time = time.time()
-                    if (current_time - user_data.timestamp) < 600:
+                    if (current_time - user_data.timestamp) < 43200:
                         # 创建用户信息prompt片段
                         if user_data.success:
                             # 成功获取用户信息
@@ -342,7 +333,8 @@ def patch_build_prompt_reply_context() -> None:
 【用户信息提示】：当前用户 {user_data.display_name}(QQ:{user_data.user_id}) 的好感度为：10
 你对用户的态度是：一般
 """
-                            enhanced_prompt = user_prompt + base_prompt
+                            disable_thinking=" /no_think"
+                            enhanced_prompt = user_prompt + base_prompt + disable_thinking
 
                         logger.debug(
                             f"[MahiroAdapter] 已为用户{user_data.display_name}({sender_user_id})添加用户信息提示"
@@ -350,7 +342,7 @@ def patch_build_prompt_reply_context() -> None:
                         logger.debug(
                             f"[MahiroAdapter] 用户信息获取结果: {'成功' if user_data.success else '失败'}"
                         )
-                        return enhanced_prompt, token_list
+                        return enhanced_prompt, selected_expressions, timing_logs, almost_zero_str
                     else:
                         logger.debug("[MahiroAdapter] 用户信息已过期，跳过处理")
                 else:
@@ -360,7 +352,7 @@ def patch_build_prompt_reply_context() -> None:
                 logger.warning(f"[MahiroAdapter] 处理用户信息时出错: {e}")
 
             # 如果出错或没有用户信息，返回原始prompt
-            return base_prompt, token_list
+            return base_prompt, selected_expressions, timing_logs, almost_zero_str
         
         async def patched_method_pri(
             self: "PrivateReplyer",
@@ -421,7 +413,7 @@ def patch_build_prompt_reply_context() -> None:
 
                     # 检查信息是否过期（10分钟内）
                     current_time = time.time()
-                    if (current_time - user_data.timestamp) < 600:
+                    if (current_time - user_data.timestamp) < 43200:
                         # 创建用户信息prompt片段
                         if user_data.success:
                             # 成功获取用户信息
@@ -464,7 +456,8 @@ def patch_build_prompt_reply_context() -> None:
 你对用户的态度是：一般
 
 """
-                            enhanced_prompt = user_prompt + base_prompt
+                            disable_thinking=" /no_think"
+                            enhanced_prompt = user_prompt + base_prompt + disable_thinking
                         # 将用户信息插入到prompt的开头
                         
 
@@ -483,7 +476,6 @@ def patch_build_prompt_reply_context() -> None:
             except Exception as e:
                 logger.warning(f"[MahiroAdapter] 处理用户信息时出错: {e}")
 
-            # 如果出错或没有用户信息，返回原始prompt
             return base_prompt, token_list
 
         # 替换原始方法 - 使用类型忽略来避免类型检查错误
@@ -498,46 +490,6 @@ def patch_build_prompt_reply_context() -> None:
     except Exception as e:
         logger.error(f"[MahiroAdapter] 应用补丁时发生未知错误: {e}")
         raise
-
-
-def remove_user_info_patch() -> bool:
-    """移除MahiroAdapter"""
-    global _original_build_prompt_reply_context_group, _original_build_prompt_reply_context_pri, _patch_applied
-
-    try:
-        if _patch_applied and _original_build_prompt_reply_context_group is not None:
-            try:
-                from ...src.chat.replyer.group_generator import DefaultReplyer
-                from ...src.chat.replyer.private_generator import PrivateReplyer
-            except ImportError:
-                try:
-                    from src.chat.replyer.group_generator import DefaultReplyer
-                    from src.chat.replyer.private_generator import PrivateReplyer
-                except ImportError:
-                    from modules.MaiBot.src.chat.replyer.group_generator import (
-                        DefaultReplyer,
-                    )
-                    from modules.MaiBot.src.chat.replyer.private_generator import PrivateReplyer
-            setattr(
-                DefaultReplyer,
-                "build_prompt_reply_context",
-                _original_build_prompt_reply_context_group,
-            )
-            setattr(
-                PrivateReplyer,
-                "build_prompt_reply_context",
-                _original_build_prompt_reply_context_pri,
-            )
-            _patch_applied = False
-            logger.info("[MahiroAdapter] 已成功移除prompt构建补丁")
-            return True
-        else:
-            logger.warning("[MahiroAdapter] 补丁未应用或原始方法未保存，无法移除")
-            return False
-    except Exception as e:
-        logger.error(f"[MahiroAdapter] 移除补丁失败: {e}")
-        return False
-
 
 def apply_user_info_patch() -> bool:
     """应用MahiroAdapter"""
@@ -821,18 +773,6 @@ class UserInfoPlugin(BasePlugin):
     def _test_patch(self) -> None:
         """测试补丁是否生效"""
         try:
-            try:
-                from ...src.chat.replyer.group_generator import DefaultReplyer
-                from ...src.chat.replyer.private_generator import PrivateReplyer
-            except ImportError:
-                try:
-                    from src.chat.replyer.group_generator import DefaultReplyer
-                    from src.chat.replyer.private_generator import PrivateReplyer
-                except ImportError:
-                    from modules.MaiBot.src.chat.replyer.group_generator import (
-                        DefaultReplyer,
-                    )
-                    from modules.MaiBot.src.chat.replyer.private_generator import PrivateReplyer
             # 检查方法是否被替换
             if hasattr(DefaultReplyer.build_prompt_reply_context, "__wrapped__"):
                 logger.info("[MahiroAdapter] 补丁验证成功 - 群聊方法已被包装")
@@ -847,40 +787,4 @@ class UserInfoPlugin(BasePlugin):
 
     def on_plugin_load(self) -> None:
         """插件加载时的回调"""
-        logger.info("[MahiroAdapter] 插件加载完成 (v0.10.2兼容)")
-
-    def on_plugin_unload(self) -> None:
-        """插件卸载时的回调 - 移除补丁"""
-        try:
-            if remove_user_info_patch():
-                logger.info("[MahiroAdapter] 补丁已成功移除")
-            else:
-                logger.error("[MahiroAdapter] 补丁移除失败或未应用")
-        except Exception as e:
-            logger.error(f"[MahiroAdapter] 卸载补丁时出错: {e}")
-
-        # 清理全局缓存
-        global _global_user_cache
-        _global_user_cache.clear()
-        logger.info("[MahiroAdapter] 已清理用户信息缓存")
-        logger.info("[MahiroAdapter] 插件卸载完成")
-
-    def on_plugin_disable(self) -> None:
-        """插件禁用时的回调 - 移除补丁但保留缓存"""
-        try:
-            if remove_user_info_patch():
-                logger.info("[MahiroAdapter] 补丁已移除（插件已禁用）")
-            else:
-                logger.error("[MahiroAdapter] 补丁移除失败或未应用")
-        except Exception as e:
-            logger.error(f"[MahiroAdapter] 禁用时移除补丁出错: {e}")
-
-    def on_plugin_enable(self) -> None:
-        """插件启用时的回调 - 重新应用补丁"""
-        try:
-            if apply_user_info_patch():
-                logger.info("[MahiroAdapter] 补丁已重新应用（插件已启用）")
-            else:
-                logger.error("[MahiroAdapter] 补丁重新应用失败")
-        except Exception as e:
-            logger.error(f"[MahiroAdapter] 启用时应用补丁出错: {e}")
+        logger.info("[MahiroAdapter] 插件加载完成")
