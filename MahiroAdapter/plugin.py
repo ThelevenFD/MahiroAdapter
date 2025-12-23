@@ -4,7 +4,7 @@ import threading
 import time
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
-from typing import TypedDict, override
+from typing import TypedDict
 from src.chat.replyer.group_generator import DefaultReplyer
 from src.chat.replyer.private_generator import PrivateReplyer
 from src.common.logger import get_logger
