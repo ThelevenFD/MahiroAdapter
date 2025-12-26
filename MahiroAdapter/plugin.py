@@ -103,44 +103,17 @@ def clear_expired_cache() -> int:
 class ApiService:
     """API服务类 - 负责与外部API通信"""
 
-    def __init__(self, base_url: str,keep_alive_url: str, timeout: float, enable_keep_alive: bool, enable_api: bool):
+    def __init__(self, base_url: str, timeout: float, enable_api: bool):
         self.base_url = base_url
-        self.keep_alive_url = keep_alive_url
         self.timeout = timeout
-        self.enabled_keep_alive = enable_keep_alive
         self.enable_api = enable_api
         self._session = None
-        if self.enabled_keep_alive:
-            asyncio.create_task(self.keep_alive())
 
     async def get_session(self):
         """获取或创建HTTP会话"""
         if self._session is None:
             self._session = aiohttp.ClientSession()
         return self._session
-
-    async def keep_alive(self):
-        """bot保活"""
-        session = await self.get_session()
-        while True:
-            try:
-                async with session.get(
-                    self.keep_alive_url, timeout=aiohttp.ClientTimeout(total=self.timeout)
-                ) as resp:
-                    response_text = await resp.text()
-                    logger.debug(response_text)
-                    if resp.status == 200:
-                        logger.info("Keep Alive!!")
-                    else:
-                        logger.warning(f"Keep alive request failed with status: {resp.status}")
-            except asyncio.TimeoutError as e:
-                logger.error(f"Keep alive request timeout: {e}")
-            except aiohttp.ClientError as e:
-                logger.error(f"HTTP client error: {e}")
-            except Exception as e:
-                logger.error(f"Unexpected error: {e}")
-            
-            await asyncio.sleep(6)
 
     async def fetch_user_info(self, user_id: str) -> dict:
         """获取用户信息"""
@@ -534,16 +507,12 @@ class UserInfoHandler(BaseEventHandler):
         base_url = self.get_config(
             "user_info.api_base_url", "http://10.255.255.254"
         )
-        keep_alive_url = self.get_config("user_info.keep_alive_url", "")
         timeout = self.get_config("user_info.request_timeout", 5.0)
-        enable_keep_alive = self.get_config("user_info.enable_keep_alive", False)
         enable_api = self.get_config("user_info.enable_info", True)
         self.api_service = ApiService(
             base_url=base_url,
             timeout=timeout,
             enable_api=enable_api,
-            enable_keep_alive=enable_keep_alive,
-            keep_alive_url=keep_alive_url,
         )
         self._initialized = True
 
@@ -709,23 +678,14 @@ class UserInfoPlugin(BasePlugin):
             "name": ConfigField(
                 type=str, default="MahiroAdapter", description="插件名称"
             ),
-            "version": ConfigField(type=str, default="1.1.0", description="插件版本"),
             "enabled": ConfigField(type=bool, default=True, description="是否启用插件"),
-            "config_version": ConfigField(type=str, default="1.1.0", description="配置文件版本"),
+            "config_version": ConfigField(type=str, default="1.1.1", description="配置文件版本"),
         },
         "user_info": {
             "api_base_url": ConfigField(
                 type=str,
                 default="http://10.255.255.254:8080",
                 description="你的真寻连接地址",
-            ),
-            "keep_alive_url": ConfigField(
-                type=str,
-                default="",
-                description="你的保活地址",
-            ),
-            "enable_keep_alive": ConfigField(
-                type=bool, default=False, description="是否启用保活"
             ),
             "enable_info": ConfigField(
                 type=bool, default=True, description="是否启用好感度获取"
@@ -751,18 +711,6 @@ class UserInfoPlugin(BasePlugin):
         """插件初始化"""
         # 调用父类初始化
         super().__init__(**kwargs)
-
-        # 在插件初始化时立即应用补丁
-        try:
-            result = apply_user_info_patch()
-            if result:
-                logger.info("[MahiroAdapter] prompt补丁应用成功 (v0.10.2兼容)")
-                # 测试补丁是否真的生效
-                self._test_patch()
-            else:
-                logger.error("[MahiroAdapter] prompt补丁应用失败")
-        except Exception as e:
-            logger.error(f"[MahiroAdapter] 加载补丁时出错: {e}")
 
     def get_plugin_components(self):
         return [
