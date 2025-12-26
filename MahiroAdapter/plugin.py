@@ -678,7 +678,6 @@ class UserInfoPlugin(BasePlugin):
             "name": ConfigField(
                 type=str, default="MahiroAdapter", description="插件名称"
             ),
-            "version": ConfigField(type=str, default="1.1.0", description="插件版本"),
             "enabled": ConfigField(type=bool, default=True, description="是否启用插件"),
             "config_version": ConfigField(type=str, default="1.1.1", description="配置文件版本"),
         },
