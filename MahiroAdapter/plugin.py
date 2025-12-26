@@ -547,7 +547,6 @@ class UserInfoHandler(BaseEventHandler):
         )
         self._initialized = True
 
-    @override
     async def execute(
         self, message: MaiMessages
     ) -> tuple[bool, bool, str, str | None, str | None]:
