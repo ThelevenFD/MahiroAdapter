@@ -3,9 +3,22 @@
   "name": "MahiroAdapter",
   "version": "1.1.0",
   "description": "将zhenxun的好感度注入prompt",
+  "license": "MIT",
   "homepage_url": "https://github.com/ThelevenFD/MahiroAdapter",
   "repository_url": "https://github.com/ThelevenFD/MahiroAdapter",
+  "keywords": ["好感度", "prompt", "用户信息", "适配器"],
+  "categories": ["Utility Tools"],
+  "default_locale": "zh-CN",
+  "locales_path": "_locales",
   "author": {
     "name": "elevenfd"
+  },
+  "host_application": {
+    "min_version": "0.12.0",
+    "max_version": ""
+  },
+  "plugin_info": {
+    "is_built_in": false,
+    "plugin_type": "general"
   }
 }
